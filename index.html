@@ -1512,12 +1512,22 @@ button:focus-visible {
 
 
         <button
-            id="blowButton"
-            class="primary-btn blow-button">
+    id="blowButton"
+    class="primary-btn blow-button">
 
-            💨 Blow the Candle
+    🎤 Tap to Enable Microphone
 
-        </button>
+</button>
+
+<p id="micStatus"
+   style="
+       margin-top:12px;
+       color:rgba(255,255,255,0.55);
+       font-size:12px;
+       line-height:1.6;
+   ">
+    Allow microphone access, then blow gently near your microphone 💨
+</p>
 
 
         <div
@@ -1986,99 +1996,421 @@ function goToStage(number) {
 
 
 /* =========================================================
-   CANDLE INTERACTION
+   CANDLE — REAL MICROPHONE BLOW DETECTION
 ========================================================= */
 
-const blowButton =
-    $("#blowButton");
-
-const candleWrap =
-    $("#candleWrap");
-
-const wishPanel =
-    $("#wishPanel");
+const blowButton = $("#blowButton");
+const candleWrap = $("#candleWrap");
+const wishPanel = $("#wishPanel");
+const micStatus = $("#micStatus");
 
 let candleBlown = false;
+let microphoneStarted = false;
+let audioContext = null;
+let analyser = null;
+let microphoneSource = null;
+let microphoneStream = null;
+let blowAnimation = null;
 
-function beginBlow() {
+/*
+ * How strong the sound must be before
+ * we consider it a blow.
+ *
+ * Lower = easier to trigger.
+ * Higher = requires a stronger blow.
+ */
+const BLOW_THRESHOLD = 0.055;
+
+/*
+ * Blow must be detected for this long.
+ * This prevents random sounds from
+ * accidentally blowing out the candle.
+ */
+const REQUIRED_BLOW_TIME = 350;
+
+let blowStartTime = null;
+
+
+/* =========================================================
+   START MICROPHONE
+========================================================= */
+
+async function startMicrophone() {
+
+    if (microphoneStarted || candleBlown) {
+        return;
+    }
+
+    /*
+     * Check browser support.
+     */
+
+    if (
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia
+    ) {
+
+        micStatus.textContent =
+            "Your browser does not support microphone access. Please use Chrome or Safari.";
+
+        blowButton.textContent =
+            "💨 Press to Blow";
+
+        blowButton.onclick =
+            beginBlowFallback;
+
+        return;
+    }
+
+
+    /*
+     * Ask for microphone permission.
+     */
+
+    try {
+
+        micStatus.textContent =
+            "Requesting microphone permission... 🎤";
+
+        microphoneStream =
+            await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false
+                }
+            });
+
+
+        /*
+         * Create audio analyser.
+         */
+
+        audioContext =
+            new (
+                window.AudioContext ||
+                window.webkitAudioContext
+            )();
+
+
+        analyser =
+            audioContext.createAnalyser();
+
+        analyser.fftSize = 1024;
+
+        analyser.smoothingTimeConstant = 0.25;
+
+
+        microphoneSource =
+            audioContext.createMediaStreamSource(
+                microphoneStream
+            );
+
+
+        microphoneSource.connect(
+            analyser
+        );
+
+
+        microphoneStarted = true;
+
+
+        blowButton.textContent =
+            "💨 Blow the Candle";
+
+        micStatus.textContent =
+            "Microphone ready! Blow gently near your microphone 💨";
+
+
+        /*
+         * Start listening.
+         */
+
+        detectBlow();
+
+
+    } catch (error) {
+
+        console.error(
+            "Microphone permission error:",
+            error
+        );
+
+        micStatus.textContent =
+            "Microphone permission was denied. Please allow the microphone and try again.";
+
+        blowButton.textContent =
+            "🎤 Try Microphone Again";
+
+    }
+
+}
+
+
+/* =========================================================
+   DETECT BLOW
+========================================================= */
+
+function detectBlow() {
+
+    if (
+        !microphoneStarted ||
+        candleBlown
+    ) {
+        return;
+    }
+
+
+    const data =
+        new Uint8Array(
+            analyser.fftSize
+        );
+
+
+    analyser.getByteTimeDomainData(
+        data
+    );
+
+
+    /*
+     * Calculate RMS volume.
+     *
+     * A blow creates a relatively strong
+     * burst of air/noise.
+     */
+
+    let sum = 0;
+
+    for (
+        let i = 0;
+        i < data.length;
+        i++
+    ) {
+
+        const normalized =
+            (data[i] - 128) / 128;
+
+        sum +=
+            normalized *
+            normalized;
+
+    }
+
+
+    const rms =
+        Math.sqrt(
+            sum / data.length
+        );
+
+
+    /*
+     * Make the flame react while
+     * the user is blowing.
+     */
+
+    if (
+        rms > BLOW_THRESHOLD
+    ) {
+
+        candleWrap.classList.add(
+            "blowing"
+        );
+
+
+        if (
+            blowStartTime === null
+        ) {
+
+            blowStartTime =
+                performance.now();
+
+        }
+
+
+        const blowDuration =
+            performance.now() -
+            blowStartTime;
+
+
+        /*
+         * Strong enough blow for
+         * long enough = candle off.
+         */
+
+        if (
+            blowDuration >=
+            REQUIRED_BLOW_TIME
+        ) {
+
+            extinguishCandle();
+
+            return;
+
+        }
+
+    } else {
+
+        /*
+         * Sound dropped below
+         * blow threshold.
+         */
+
+        blowStartTime = null;
+
+        candleWrap.classList.remove(
+            "blowing"
+        );
+
+    }
+
+
+    blowAnimation =
+        requestAnimationFrame(
+            detectBlow
+        );
+
+}
+
+
+/* =========================================================
+   EXTINGUISH CANDLE
+========================================================= */
+
+function extinguishCandle() {
 
     if (candleBlown) {
         return;
     }
 
-    blowButton.classList.add("holding");
-    candleWrap.classList.add("blowing");
+    candleBlown = true;
 
-    setTimeout(() => {
 
-        if (candleBlown) {
-            return;
-        }
+    /*
+     * Stop microphone detection.
+     */
 
-        candleBlown = true;
+    if (blowAnimation) {
 
-        candleWrap.classList.remove("blowing");
-        candleWrap.classList.add("extinguished");
-
-        blowButton.classList.remove("holding");
-
-        blowButton.innerHTML =
-            "✨ Wish made";
-
-        blowButton.disabled = true;
-
-        wishPanel.classList.add("show");
-
-        createExplosionHearts(
-            $("#heartLayer1")
+        cancelAnimationFrame(
+            blowAnimation
         );
 
-    }, 850);
+    }
+
+
+    /*
+     * Stop microphone stream.
+     */
+
+    if (microphoneStream) {
+
+        microphoneStream
+            .getTracks()
+            .forEach(
+                track => track.stop()
+            );
+
+    }
+
+
+    /*
+     * Close audio context.
+     */
+
+    if (audioContext) {
+
+        audioContext.close()
+            .catch(() => {});
+
+    }
+
+
+    candleWrap.classList.remove(
+        "blowing"
+    );
+
+    candleWrap.classList.add(
+        "extinguished"
+    );
+
+
+    blowButton.disabled = true;
+
+    blowButton.textContent =
+        "✨ Wish Made ❤️";
+
+
+    micStatus.textContent =
+        "Your wish has been made... ❤️";
+
+
+    wishPanel.classList.add(
+        "show"
+    );
+
+
+    /*
+     * Beautiful heart explosion.
+     */
+
+    createExplosionHearts(
+        $("#heartLayer1")
+    );
+
 }
 
 
-/* Mouse */
+/* =========================================================
+   FALLBACK BUTTON
+========================================================= */
+
+function beginBlowFallback() {
+
+    if (candleBlown) {
+        return;
+    }
+
+
+    candleWrap.classList.add(
+        "blowing"
+    );
+
+
+    blowButton.textContent =
+        "💨 Blowing...";
+
+
+    setTimeout(() => {
+
+        extinguishCandle();
+
+    }, 850);
+
+}
+
+
+/* =========================================================
+   BUTTON
+========================================================= */
+
+/*
+ * First tap is used to request
+ * microphone permission.
+ */
 
 blowButton.addEventListener(
-    "mousedown",
-    beginBlow
-);
+    "click",
+    () => {
 
+        if (!microphoneStarted) {
 
-/* Touch */
-
-blowButton.addEventListener(
-    "touchstart",
-    (event) => {
-
-        event.preventDefault();
-
-        beginBlow();
-
-    },
-    { passive: false }
-);
-
-
-/* Keyboard accessibility */
-
-blowButton.addEventListener(
-    "keydown",
-    (event) => {
-
-        if (
-            event.key === "Enter" ||
-            event.key === " "
-        ) {
-
-            event.preventDefault();
-
-            beginBlow();
+            startMicrophone();
 
         }
 
     }
 );
+
 
 
 /* =========================================================
